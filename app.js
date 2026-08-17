@@ -7,6 +7,8 @@ const SHEET_URLS = {
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTwOD9JcW6q9O-FuGn050_tEv0kHKpRRrDSiDychH0m1sptT4oM8VI5UgfRfpLUaWmoOnmKxvbH3O3F/pub?gid=0&single=true&output=csv",
   skills:
     "https://docs.google.com/spreadsheets/d/e/2PACX-1vTwOD9JcW6q9O-FuGn050_tEv0kHKpRRrDSiDychH0m1sptT4oM8VI5UgfRfpLUaWmoOnmKxvbH3O3F/pub?gid=429299684&single=true&output=csv",
+  records:
+    "https://docs.google.com/spreadsheets/d/e/2PACX-1vTwOD9JcW6q9O-FuGn050_tEv0kHKpRRrDSiDychH0m1sptT4oM8VI5UgfRfpLUaWmoOnmKxvbH3O3F/pub?gid=601964812&single=true&output=csv",
 };
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyGNzZoSS7KJx2SS_RSoklP_sSoSTCbY45qhj6q2xbUH5mB-nAoUVEfBMRqyGWSoFTtcg/exec";
@@ -135,26 +137,100 @@ async function loadSheetData() {
 }
 
 async function loadRecordData() {
-  if (!APPS_SCRIPT_URL) {
-    records = normalizeRecords(loadLocalRecords());
-    return;
-  }
-
   try {
-    const response = await fetch(`${APPS_SCRIPT_URL}?action=list&ts=${Date.now()}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`Rekod gagal dimuat: ${response.status}`);
-
-    const payload = await response.json();
-    records = normalizeRecords(Array.isArray(payload.records) ? payload.records : []);
-    saveLocalRecords();
-    setStatus("Rekod Google Sheet berjaya dimuat naik.", false);
+    const recordCsv = await fetchCsv(addCacheBuster(SHEET_URLS.records));
+    records = buildRecordsFromCsv(recordCsv);
+    setStatus(
+      records.length
+        ? `${records.length} rekod TP berjaya dimuat terus daripada Google Sheet.`
+        : "Google Sheet berjaya dimuat, tetapi belum mempunyai rekod TP.",
+      false,
+    );
   } catch (error) {
-    console.error(error);
-    records = normalizeRecords(loadLocalRecords());
-    setStatus("Rekod Google Sheet gagal dimuat. Paparan menggunakan salinan setempat.", true);
+    console.error("Data TP CSV gagal dimuat:", error);
+    records = [];
+    setStatus(`Data TP Google Sheet gagal dimuat: ${error.message || error}`, true);
   }
+}
+
+function addCacheBuster(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}ts=${Date.now()}`;
+}
+
+function buildRecordsFromCsv(rows) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+
+  const expectedColumns = [
+    "id",
+    "timestamp",
+    "date",
+    "student",
+    "subject",
+    "theme",
+    "contentCode",
+    "contentTitle",
+    "contentRaw",
+    "learningCode",
+    "learningTitle",
+    "learningRaw",
+    "skill",
+    "className",
+    "tp",
+  ];
+
+  const firstRow = rows[0].map((value) => String(value || "").replace(/^\uFEFF/, "").trim());
+  const headerMap = new Map(firstRow.map((header, index) => [normalizeHeader(header), index]));
+  const hasHeader = expectedColumns.every((column) => headerMap.has(normalizeHeader(column)));
+
+  if (!hasHeader) {
+    throw new Error(`Susunan tajuk kolum data TP tidak sepadan. Tajuk diterima: ${firstRow.join(", ")}`);
+  }
+
+  const dataRows = rows.slice(1);
+  const parsed = dataRows
+    .filter((row) => row.some((value) => String(value || "").trim()))
+    .map((row) => {
+      const record = {};
+      expectedColumns.forEach((column) => {
+        record[column] = row[headerMap.get(normalizeHeader(column))] ?? "";
+      });
+      return record;
+    })
+    .filter((record) => record.student && record.className && record.learningCode && record.tp);
+
+  return deduplicateRecords(normalizeRecords(parsed));
+}
+
+function normalizeHeader(value) {
+  return String(value || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/[\s_-]+/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function deduplicateRecords(source) {
+  const byId = new Map();
+  source.forEach((record, index) => {
+    const key = record.id || [
+      record.className,
+      record.student,
+      getRecordSubject(record),
+      record.contentRaw || record.contentCode,
+      record.learningRaw || record.learningCode,
+    ].join("|");
+
+    const previous = byId.get(key);
+    const previousTime = previous ? new Date(previous.record.timestamp || previous.record.date || 0).getTime() : -Infinity;
+    const nextTime = new Date(record.timestamp || record.date || 0).getTime();
+    if (!previous || nextTime >= previousTime || Number.isNaN(previousTime)) {
+      byId.set(key, { index, record });
+    }
+  });
+  return [...byId.values()]
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.record);
 }
 
 async function fetchCsv(url) {
@@ -437,14 +513,17 @@ async function saveRecordBatch(event) {
   renderStudents();
   renderFilters();
   renderDashboard();
-  setStatus("Rekod berjaya disimpan dan dikemaskini.", false);
-  showStatusPopup("success", "Rekod Berjaya Disimpan", `${nextRecords.length} rekod telah disimpan dan dashboard dikemaskini.`);
+  setStatus("Rekod berjaya dihantar ke Google Sheet.", false);
+  showStatusPopup(
+    "success",
+    "Rekod Berjaya Dihantar",
+    `${nextRecords.length} rekod telah dihantar. Dashboard akan membaca semula data daripada CSV Google Sheet apabila tab Dashboard Analisis dibuka.`,
+  );
 }
 
 async function saveRecordBatchToStore(nextRecords) {
   if (!APPS_SCRIPT_URL) {
     mergeRecords(nextRecords);
-    saveLocalRecords();
     return true;
   }
 
@@ -457,8 +536,9 @@ async function saveRecordBatchToStore(nextRecords) {
       method: "POST",
       mode: "no-cors",
     });
+    // Kekalkan rekod baharu dalam memori untuk paparan segera sahaja.
+    // Dashboard akan membaca semula sumber sebenar daripada CSV Google Sheet.
     mergeRecords(nextRecords);
-    saveLocalRecords();
     return true;
   } catch (error) {
     console.error(error);
@@ -551,7 +631,7 @@ function renderFilters() {
 function renderDashboard() {
   const filtered = getFilteredRecords();
   const learningColumns = getLearningColumns(filtered);
-  const rows = groupByStudentAndContent(filtered);
+  const rows = groupByStudent(filtered);
 
   if (!filtered.length) {
     el.analysisHead.innerHTML = "";
@@ -563,26 +643,33 @@ function renderDashboard() {
     <tr>
       <th>Nama Murid</th>
       <th>Kelas</th>
-      <th>Standard Kandungan</th>
       ${learningColumns
-        .map((column) => `<th class="sp-header">${column.code}<small>${column.skill}</small></th>`)
+        .map((column) => {
+          const fullSp = `${column.subject ? `${column.subject} — ` : ""}${column.code} ${column.title || column.raw || ""}${column.skill ? ` | Kemahiran: ${column.skill}` : ""}`.trim();
+          return `<th class="sp-header">
+            <span class="sp-tooltip" tabindex="0" title="${escapeAttr(fullSp)}">
+              ${escapeHtml(column.code)}
+              <span class="sp-tooltip-text">${escapeHtml(fullSp)}</span>
+            </span>
+          </th>`;
+        })
         .join("")}
       <th>Purata TP</th>
     </tr>
   `;
 
   el.analysisBody.innerHTML = rows
-    .map(({ student, className, contentLabel, standardsByCode }) => {
+    .map(({ student, className, standardsByKey }) => {
       const numericTp = learningColumns
-        .map((column) => standardsByCode[column.code]?.tp)
+        .map((column) => standardsByKey[column.key]?.tp)
         .filter((tp) => tp && tp !== "TD")
-        .map(Number);
+        .map(Number)
+        .filter(Number.isFinite);
       return `
         <tr>
-          <td><strong>${student}</strong></td>
-          <td>${className}</td>
-          <td class="standard-cell">${contentLabel}</td>
-          ${learningColumns.map((column) => renderTpCell(standardsByCode[column.code])).join("")}
+          <td><strong>${escapeHtml(student)}</strong></td>
+          <td>${escapeHtml(className)}</td>
+          ${learningColumns.map((column) => renderTpCell(standardsByKey[column.key])).join("")}
           <td class="average-cell">${formatAverage(average(numericTp))}</td>
         </tr>
       `;
@@ -604,36 +691,46 @@ function getFilteredRecords() {
   });
 }
 
-function groupByStudentAndContent(source) {
+function getLearningKey(record) {
+  return `${getRecordSubject(record)}|${record.learningCode}`;
+}
+
+function groupByStudent(source) {
   const grouped = new Map();
   source.forEach((record) => {
-    const key = `${record.student}|${record.className}|${record.contentCode}`;
+    const key = `${record.student}|${record.className}`;
     if (!grouped.has(key)) {
       grouped.set(key, {
         student: record.student,
         className: record.className,
-        contentLabel: `<strong>${record.contentCode} ${record.contentTitle}</strong><small>${record.skill}</small>`,
-        standardsByCode: {},
+        standardsByKey: {},
       });
     }
-    grouped.get(key).standardsByCode[record.learningCode] = record;
+    grouped.get(key).standardsByKey[getLearningKey(record)] = record;
   });
   return [...grouped.values()].sort(
-    (a, b) => a.student.localeCompare(b.student) || a.contentLabel.localeCompare(b.contentLabel),
+    (a, b) => naturalSort(a.className, b.className) || a.student.localeCompare(b.student, "ms"),
   );
 }
 
 function getLearningColumns(source) {
   const columns = new Map();
   source.forEach((record) => {
-    if (!columns.has(record.learningCode)) {
-      columns.set(record.learningCode, {
+    const key = getLearningKey(record);
+    if (!columns.has(key)) {
+      columns.set(key, {
+        key,
+        subject: getRecordSubject(record),
         code: record.learningCode,
+        title: record.learningTitle,
+        raw: record.learningRaw,
         skill: record.skill,
       });
     }
   });
-  return [...columns.values()].sort((a, b) => naturalSort(a.code, b.code));
+  return [...columns.values()].sort(
+    (a, b) => naturalSort(a.subject, b.subject) || naturalSort(a.code, b.code),
+  );
 }
 
 function renderTpCell(record) {
@@ -779,15 +876,11 @@ function printReport() {
 }
 
 function saveLocalRecords() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  // Tidak digunakan: Data TP Dashboard dibaca terus daripada CSV Google Sheet.
 }
 
 function loadLocalRecords() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
-  } catch {
-    return [];
-  }
+  return [];
 }
 
 function unique(values) {

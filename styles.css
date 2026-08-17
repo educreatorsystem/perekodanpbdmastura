@@ -543,18 +543,55 @@ dd {
   min-width: 120px;
 }
 
-.analysis-table th:nth-child(3),
-.analysis-table td:nth-child(3) {
-  min-width: 240px;
-}
-
-.analysis-table th:nth-child(4),
-.analysis-table td:nth-child(4) {
+.analysis-table th:nth-child(n + 3),
+.analysis-table td:nth-child(n + 3) {
   min-width: 92px;
 }
 
 .sp-header {
+  overflow: visible;
+  position: relative;
   text-align: center;
+}
+
+.sp-tooltip {
+  cursor: help;
+  display: inline-block;
+  font-weight: 850;
+  position: relative;
+}
+
+.sp-tooltip-text {
+  background: #0f172a;
+  border-radius: 10px;
+  bottom: calc(100% + 10px);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  left: 50%;
+  line-height: 1.35;
+  max-width: 360px;
+  min-width: 240px;
+  opacity: 0;
+  padding: 10px 12px;
+  pointer-events: none;
+  position: absolute;
+  text-align: left;
+  text-transform: none;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  visibility: hidden;
+  white-space: normal;
+  z-index: 40;
+}
+
+.sp-tooltip:hover .sp-tooltip-text,
+.sp-tooltip:focus .sp-tooltip-text,
+.sp-tooltip:focus-visible .sp-tooltip-text {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  visibility: visible;
 }
 
 .average-cell {
@@ -697,6 +734,7 @@ dd {
 }
 
 @media print {
+  .sp-tooltip-text { display: none !important; }
   body {
     background: #ffffff;
   }
